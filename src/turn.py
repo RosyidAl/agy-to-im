@@ -22,7 +22,8 @@ async def _compile_memory_layer(chat_dir: str) -> None:
     """Run graphify extract and export in the background to build the OKF memory vault."""
     try:
         import shutil
-        graphify_bin = shutil.which("graphify") or "/home/i/.local/bin/graphify"
+        from pathlib import Path
+        graphify_bin = shutil.which("graphify") or str(Path.home() / ".local" / "bin" / "graphify")
         # Run graphify extract . (AST + semantic codebase index)
         proc1 = await asyncio.create_subprocess_exec(
             graphify_bin, "extract", ".",

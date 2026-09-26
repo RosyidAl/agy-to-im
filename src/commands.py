@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.media import clean_inbox, list_inbox
@@ -16,14 +17,17 @@ if TYPE_CHECKING:
     from src.state import ChatState
     from src.telegram import CallbackQuery, InboundMessage
 
-DEFAULT_MODEL = "gemini-3.7-flash-high"
+DEFAULT_MODEL = "gemini-3.8-flash-high"
 
 MODEL_CHOICES: tuple[str, ...] = (
+    "gemini-3.8-flash-high",
+    "gemini-3.8-flash-medium",
+    "gemini-3.8-flash-low",
     "gemini-3.7-flash-high",
-    "gemini-3.7-flash-medium",
     "gemini-3.1-pro-high",
-    "gemini-2.5-pro",
+    "claude-opus-4-6-thinking",
     "claude-sonnet-4-6",
+    "gpt-oss-120b-medium",
 )
 MODE_CHOICES: tuple[tuple[str, str], ...] = (
     ("code", "Code (auto)"),
@@ -35,7 +39,7 @@ WELCOME_TEXT = (
     "👋 Welcome! I'm your Antigravity bridge bot.\n\n"
     "Send me any message and I'll forward it to the agy CLI. "
     "Each chat has its own session that persists across messages.\n\n"
-    "Commands: /start · /help · /status · /settings · /model · /mode · /reset"
+    "Commands: /start · /help · /status · /settings · /model · /mode · /cd · /pwd · /reset"
 )
 
 HELP_TEXT = (
@@ -46,6 +50,8 @@ HELP_TEXT = (
     "/settings — control panel with buttons\n"
     "/model    — pick a model (per-chat override)\n"
     "/mode     — pick a mode (Code or Plan)\n"
+    "/pwd      — show current working directory\n"
+    "/cd <dir> — change working directory for this chat\n"
     "/reset    — fresh agy session for this chat\n"
     "/info     — same as /status\n"
     "/image on|off — toggle photo processing\n"
@@ -191,6 +197,27 @@ async def handle_text_command(
     if cmd == "/reset":
         cs.has_session = False
         return BridgeReply("🧹 Session reset. The next message starts fresh.")
+    if cmd == "/pwd":
+        home = os.path.expanduser("~")
+        pretty = cs.chat_dir.replace(home, "~", 1)
+        return BridgeReply(f"📂 Current working directory:\n{pretty}\n\nFull path:\n{cs.chat_dir}")
+    if cmd == "/cd":
+        if not args:
+            target_str = cfg.agy.default_workdir or os.path.expanduser("~")
+            target = Path(target_str).expanduser().resolve()
+        else:
+            target = Path(args.strip()).expanduser().resolve()
+
+        if not target.is_dir():
+            return BridgeReply(f"❌ Directory not found: {args}")
+
+        cs.chat_dir = str(target)
+        cs.has_session = False
+        home = os.path.expanduser("~")
+        pretty = str(target).replace(home, "~", 1)
+        return BridgeReply(
+            f"✅ Switched working directory to:\n{pretty}\n\n(A new session has been started for this workspace.)"
+        )
     if cmd == "/thinking":
         mode = args.strip().lower()
         if mode in ("on", "true", "1"):
@@ -248,7 +275,7 @@ def handle_callback(
         if choice == _DEFAULT_TOKEN:
             cs.model = ""
             toast = "Using config default"
-        elif choice in MODEL_CHOICES:
+        elif choice in MODEL_CHOICES or is_valid_model(choice):
             cs.model = choice
             toast = f"Model: {choice}"
         else:

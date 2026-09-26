@@ -59,7 +59,7 @@ def _build_args(
 
     if model:
         # If model is a base model without explicit effort suffix, supply --effort high
-        if any(model.startswith(prefix) for prefix in ("gemini-3.7", "gemini-3.6", "gemini-3.5", "gemini-3.1")) and not any(model.endswith(sfx) for sfx in ("-low", "-medium", "-high")):
+        if any(model.startswith(prefix) for prefix in ("gemini-3.8", "gemini-3.7", "gemini-3.6", "gemini-3.5", "gemini-3.1")) and not any(model.endswith(sfx) for sfx in ("-low", "-medium", "-high")):
             args.extend(["--model", model, "--effort", "high"])
         else:
             args.extend(["--model", model])

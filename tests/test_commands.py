@@ -110,3 +110,43 @@ async def test_callback_mode_choice() -> None:
     reply = handle_callback(cq, cs, _cfg())
     assert cs.mode == "plan"
     assert "plan" in reply.toast.lower()
+
+
+async def test_pwd_command() -> None:
+    cs = _state()
+    reply = await handle_text_command(_FakeMsg("/pwd"), cs, _cfg())
+    assert reply is not None
+    assert "/tmp/chat" in reply.text
+
+
+async def test_cd_valid_dir(tmp_path: Path) -> None:
+    cs = _state()
+    cs.has_session = True
+    target = tmp_path / "my_project"
+    target.mkdir()
+    reply = await handle_text_command(_FakeMsg(f"/cd {target}"), cs, _cfg())
+    assert reply is not None
+    assert "Switched working directory" in reply.text
+    assert cs.chat_dir == str(target.resolve())
+    assert cs.has_session is False
+
+
+async def test_cd_invalid_dir() -> None:
+    cs = _state()
+    reply = await handle_text_command(_FakeMsg("/cd /nonexistent/dir/xyz"), cs, _cfg())
+    assert reply is not None
+    assert "not found" in reply.text.lower()
+
+
+async def test_cd_default_fallback(tmp_path: Path) -> None:
+    cs = _state()
+    default_dir = tmp_path / "default_dir"
+    default_dir.mkdir()
+    cfg = Config(
+        telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]),
+        agy=AgyConfig(default_workdir=str(default_dir)),
+    )
+    reply = await handle_text_command(_FakeMsg("/cd"), cs, cfg)
+    assert reply is not None
+    assert "Switched working directory" in reply.text
+    assert cs.chat_dir == str(default_dir.resolve())

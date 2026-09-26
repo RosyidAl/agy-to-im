@@ -69,19 +69,44 @@ def _safe_bool(raw: object) -> bool:
     return True
 
 
-def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
+def _safe_chat_state(
+    chats_root: Path,
+    raw: dict,
+    extra_allowed_dirs: list[Path] | None = None,
+) -> ChatState | None:
     chat_dir = raw.get("chat_dir")
     if not isinstance(chat_dir, str):
         return None
-    p = Path(chat_dir)
+    p = Path(chat_dir).expanduser()
+    if not p.is_absolute():
+        return None
+
+    is_valid = False
+    # Standard chat dir under chats_root
     try:
         p.resolve().relative_to(chats_root.resolve())
+        if _CHAT_DIR_RE.match(p.name):
+            is_valid = True
     except (ValueError, OSError):
+        pass
+
+    # Extra allowed directories (such as default_workdir or projects)
+    if not is_valid and extra_allowed_dirs:
+        for allowed in extra_allowed_dirs:
+            try:
+                p_res = p.resolve()
+                a_res = allowed.resolve()
+                if (p_res == a_res or p_res.is_relative_to(a_res)) and p_res.is_dir():
+                    is_valid = True
+                    break
+            except (ValueError, OSError):
+                continue
+
+    if not is_valid:
         return None
-    if not _CHAT_DIR_RE.match(p.name):
-        return None
+
     return ChatState(
-        chat_dir=str(p),
+        chat_dir=str(p.resolve()),
         has_session=bool(raw.get("has_session", False)),
         model=_safe_model(raw.get("model", "")),
         mode=_safe_mode(raw.get("mode", "")),
@@ -90,7 +115,11 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
     )
 
 
-def load_state(path: Path, chats_root: Path) -> State:
+def load_state(
+    path: Path,
+    chats_root: Path,
+    extra_allowed_dirs: list[Path] | None = None,
+) -> State:
     if not path.exists():
         return State()
     try:
@@ -106,7 +135,7 @@ def load_state(path: Path, chats_root: Path) -> State:
             continue
         if not isinstance(v, dict):
             continue
-        cs = _safe_chat_state(chats_root, v)
+        cs = _safe_chat_state(chats_root, v, extra_allowed_dirs=extra_allowed_dirs)
         if cs is not None:
             chats[chat_id] = cs
     return State(

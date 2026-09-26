@@ -86,7 +86,7 @@ def _ensure_chat_state(state: State, chat_id: int, chats_root: Path) -> ChatStat
     if cs is not None:
         Path(cs.chat_dir).mkdir(parents=True, exist_ok=True)
         return cs
-    chat_dir = chats_root / str(chat_id)
+    chat_dir = (chats_root / str(chat_id)).resolve()
     chat_dir.mkdir(parents=True, exist_ok=True)
     cs = ChatState(chat_dir=str(chat_dir))
     state.chats[chat_id] = cs
@@ -237,7 +237,10 @@ async def run(
     _QUEUE.max_per_user = cfg.safety.queue.max_per_user
     _QUEUE.cooldown_seconds = cfg.safety.queue.cooldown_seconds
     chats_root.mkdir(parents=True, exist_ok=True)
-    state = load_state(state_path, chats_root)
+    allowed_dirs = [Path.home()]
+    if cfg.agy.default_workdir:
+        allowed_dirs.append(Path(cfg.agy.default_workdir).expanduser())
+    state = load_state(state_path, chats_root, extra_allowed_dirs=allowed_dirs)
     tick = 0
     async with tg:
         while not stop_event.is_set():
