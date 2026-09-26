@@ -171,16 +171,25 @@ class TelegramClient:
         text: str,
         *,
         keyboard: InlineKeyboard | None = None,
+        parse_mode: str | None = "Markdown",
     ) -> int | None:
         assert self._client is not None
         first_message_id: int | None = None
         chunks = chunk_message(text)
         for i, chunk in enumerate(chunks):
             payload: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
             if i == 0 and keyboard is not None:
                 payload["reply_markup"] = {"inline_keyboard": keyboard}
             r = await self._client.post(f"{self._base}/sendMessage", json=payload)
             data = r.json()
+            if not data.get("ok"):
+                desc = str(data.get("description", "")).lower()
+                if payload.get("parse_mode") and ("parse" in desc or "entity" in desc or "tag" in desc):
+                    payload.pop("parse_mode", None)
+                    r = await self._client.post(f"{self._base}/sendMessage", json=payload)
+                    data = r.json()
             if not data.get("ok"):
                 raise RuntimeError(f"sendMessage failed: {data.get('description')}")
             if i == 0:

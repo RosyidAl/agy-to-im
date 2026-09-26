@@ -33,13 +33,14 @@ MODE_CHOICES: tuple[tuple[str, str], ...] = (
     ("code", "Code (auto)"),
     ("plan", "Plan (read-only sandbox)"),
 )
+EFFORT_CHOICES: tuple[str, ...] = ("low", "medium", "high", "max")
 _DEFAULT_TOKEN = "_DEFAULT"
 
 WELCOME_TEXT = (
     "👋 Welcome! I'm your Antigravity bridge bot.\n\n"
     "Send me any message and I'll forward it to the agy CLI. "
     "Each chat has its own session that persists across messages.\n\n"
-    "Commands: /start · /help · /status · /settings · /model · /mode · /cd · /pwd · /reset"
+    "Commands: /start · /help · /status · /settings · /model · /mode · /effort · /cd · /pwd · /stop · /reset"
 )
 
 HELP_TEXT = (
@@ -50,8 +51,10 @@ HELP_TEXT = (
     "/settings — control panel with buttons\n"
     "/model    — pick a model (per-chat override)\n"
     "/mode     — pick a mode (Code or Plan)\n"
+    "/effort   — pick reasoning effort (low/med/high/max)\n"
     "/pwd      — show current working directory\n"
     "/cd <dir> — change working directory for this chat\n"
+    "/stop     — abort actively running agy turn\n"
     "/reset    — fresh agy session for this chat\n"
     "/info     — same as /status\n"
     "/image on|off — toggle photo processing\n"
@@ -87,6 +90,7 @@ def _effective_mode(cs: "ChatState", cfg: "Config") -> tuple[str, str]:
 def render_status(cs: "ChatState", cfg: "Config") -> str:
     model, model_src = _effective_model(cs, cfg)
     mode, mode_src = _effective_mode(cs, cfg)
+    effort = getattr(cs, "effort", "") or "default"
     session = "active (resumes next turn)" if cs.has_session else "fresh (next turn starts new)"
     home = os.path.expanduser("~")
     workdir = cs.chat_dir.replace(home, "~", 1)
@@ -94,6 +98,7 @@ def render_status(cs: "ChatState", cfg: "Config") -> str:
         "🟢 Antigravity Bridge — Status\n"
         f"Model:      {model}  [{model_src}]\n"
         f"Mode:       {mode}  [{mode_src}]\n"
+        f"Effort:     {effort}\n"
         "\n"
         "This chat:\n"
         f"  Session:  {session}\n"
@@ -108,7 +113,10 @@ def _settings_keyboard() -> InlineKeyboard:
             {"text": "🤖 Change model", "callback_data": "nav:model"},
             {"text": "🛡 Change mode", "callback_data": "nav:mode"},
         ],
-        [{"text": "🧹 Reset session", "callback_data": "R"}],
+        [
+            {"text": "⚡ Change effort", "callback_data": "nav:effort"},
+            {"text": "🧹 Reset session", "callback_data": "R"},
+        ],
         [{"text": "🔄 Refresh", "callback_data": "nav:settings"}],
     ]
 
@@ -139,6 +147,19 @@ def _mode_keyboard(current_per_chat: str) -> InlineKeyboard:
     ]
 
 
+def _effort_keyboard(current_per_chat: str) -> InlineKeyboard:
+    cells: list[dict[str, object]] = []
+    for val in EFFORT_CHOICES:
+        marker = "● " if val == current_per_chat else "○ "
+        cells.append({"text": marker + val.capitalize(), "callback_data": f"e:{val}"})
+    default_marker = "● " if not current_per_chat else "○ "
+    return [
+        cells,
+        [{"text": default_marker + "Use model default", "callback_data": f"e:{_DEFAULT_TOKEN}"}],
+        [{"text": "← Back to settings", "callback_data": "nav:settings"}],
+    ]
+
+
 def _render_settings(cs: "ChatState", cfg: "Config") -> BridgeReply:
     return BridgeReply(text=render_status(cs, cfg), keyboard=_settings_keyboard())
 
@@ -156,6 +177,14 @@ def _render_mode_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
     return BridgeReply(
         text=f"🛡 Choose a mode for this chat\n\nCurrent: {cur}  [{src}]",
         keyboard=_mode_keyboard(cs.mode),
+    )
+
+
+def _render_effort_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
+    cur = getattr(cs, "effort", "") or "default"
+    return BridgeReply(
+        text=f"⚡ Choose reasoning effort for this chat\n\nCurrent: {cur}",
+        keyboard=_effort_keyboard(getattr(cs, "effort", "")),
     )
 
 
@@ -218,6 +247,22 @@ async def handle_text_command(
         return BridgeReply(
             f"✅ Switched working directory to:\n{pretty}\n\n(A new session has been started for this workspace.)"
         )
+    if cmd == "/effort":
+        if args:
+            val = args.strip().lower()
+            if val in ("reset", "default", "auto", "off"):
+                cs.effort = ""
+                return BridgeReply("⚡ Reasoning effort reset to default.")
+            if val in EFFORT_CHOICES:
+                cs.effort = val
+                return BridgeReply(f"⚡ Reasoning effort set to {val}.")
+            return BridgeReply(f"⚠️ Unsupported effort: {args}. Choose: low, medium, high, max, or default.")
+        return _render_effort_picker(cs, cfg)
+    if cmd in ("/stop", "/abort"):
+        from src.agy_runner import abort_turn
+        if abort_turn(cs.chat_dir):
+            return BridgeReply("🛑 Active turn aborted.")
+        return BridgeReply("ℹ️ No active agy process is currently running for this chat.")
     if cmd == "/thinking":
         mode = args.strip().lower()
         if mode in ("on", "true", "1"):
@@ -265,6 +310,8 @@ def handle_callback(
         return _render_model_picker(cs, cfg)
     if data == "nav:mode":
         return _render_mode_picker(cs, cfg)
+    if data == "nav:effort":
+        return _render_effort_picker(cs, cfg)
     if data == "R":
         cs.has_session = False
         rep = _render_settings(cs, cfg)
@@ -297,4 +344,18 @@ def handle_callback(
         rep = _render_settings(cs, cfg)
         return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
 
+    if data.startswith("e:"):
+        choice = data[2:]
+        if choice == _DEFAULT_TOKEN:
+            cs.effort = ""
+            toast = "Using default effort"
+        elif choice in EFFORT_CHOICES:
+            cs.effort = choice
+            toast = f"Effort: {choice}"
+        else:
+            toast = "Unknown choice"
+        rep = _render_settings(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
+
     return _render_settings(cs, cfg)
+

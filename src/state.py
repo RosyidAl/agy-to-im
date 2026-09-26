@@ -23,6 +23,7 @@ _CHAT_DIR_RE = re.compile(r"^-?[0-9]+$")
 _MODEL_RE = re.compile(r"^[a-zA-Z0-9._][a-zA-Z0-9._\-]*$")
 
 _ALLOWED_MODES = frozenset({"", "code", "plan"})
+_ALLOWED_EFFORTS = frozenset({"", "low", "medium", "high", "max"})
 
 
 @dataclass
@@ -31,6 +32,7 @@ class ChatState:
     has_session: bool = False  # True after first successful agy turn
     model: str = ""  # "" → use cfg.agy.model
     mode: str = ""  # "" → use cfg.agy.mode; values: "code" | "plan"
+    effort: str = ""  # "" → default; values: "low" | "medium" | "high" | "max"
     photo_enabled: bool = True  # toggle for photo processing
     turn_count: int = 0  # successful turns served on this chat
 
@@ -67,6 +69,12 @@ def _safe_bool(raw: object) -> bool:
     if isinstance(raw, bool):
         return raw
     return True
+
+
+def _safe_effort(raw: object) -> str:
+    if isinstance(raw, str) and raw in _ALLOWED_EFFORTS:
+        return raw
+    return ""
 
 
 def _safe_chat_state(
@@ -110,6 +118,7 @@ def _safe_chat_state(
         has_session=bool(raw.get("has_session", False)),
         model=_safe_model(raw.get("model", "")),
         mode=_safe_mode(raw.get("mode", "")),
+        effort=_safe_effort(raw.get("effort", "")),
         photo_enabled=_safe_bool(raw.get("photo_enabled", True)),
         turn_count=_safe_turn_count(raw.get("turn_count", 0)),
     )

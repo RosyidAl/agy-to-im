@@ -38,6 +38,21 @@ class AgyResult:
     stderr: str
 
 
+_ACTIVE_PROC: dict[str, subprocess.Popen] = {}
+
+
+def abort_turn(chat_dir: str) -> bool:
+    """Abort an actively running agy process in chat_dir."""
+    proc = _ACTIVE_PROC.get(chat_dir)
+    if proc is not None:
+        try:
+            proc.kill()
+            return True
+        except Exception:
+            pass
+    return False
+
+
 def _build_args(
     *,
     agy_path: str,
@@ -47,6 +62,7 @@ def _build_args(
     mode: str,
     print_timeout: str,
     chat_dir: str = "",
+    effort: str = "",
 ) -> list[str]:
     import shutil
     resolved_agy = shutil.which(agy_path) or agy_path
@@ -57,7 +73,11 @@ def _build_args(
     else:
         args.append("--new-project")
 
-    if model:
+    if effort:
+        if model:
+            args.extend(["--model", model])
+        args.extend(["--effort", effort])
+    elif model:
         # If model is a base model without explicit effort suffix, supply --effort high
         if any(model.startswith(prefix) for prefix in ("gemini-3.8", "gemini-3.7", "gemini-3.6", "gemini-3.5", "gemini-3.1")) and not any(model.endswith(sfx) for sfx in ("-low", "-medium", "-high")):
             args.extend(["--model", model, "--effort", "high"])
@@ -82,29 +102,40 @@ def _run_sync(
 ) -> AgyResult:
     """Synchronous worker for subprocess invocation. Called via asyncio.to_thread."""
     _reap_zombies()
+    proc = None
     try:
-        completed = subprocess.run(
+        proc = subprocess.Popen(
             args,
             cwd=cwd,
             env=os.environ.copy(),
-            capture_output=True,
-            check=False,
-            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
-    except subprocess.TimeoutExpired as exc:
-        partial_stderr = ""
-        if exc.stderr is not None:
-            partial_stderr = (
-                exc.stderr.decode("utf-8", errors="replace")
-                if isinstance(exc.stderr, (bytes, bytearray))
-                else str(exc.stderr)
-            )
+        _ACTIVE_PROC[cwd] = proc
+        stdout_bytes, stderr_bytes = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if proc:
+            proc.kill()
+            stdout_bytes, stderr_bytes = proc.communicate()
+        else:
+            stdout_bytes, stderr_bytes = b"", b""
         message = f"agy timed out after {timeout}s"
+        partial_stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
         stderr = f"{partial_stderr}\n{message}".strip() if partial_stderr else message
         gc.collect()
         return AgyResult(text="", exit_code=124, stderr=stderr)
+    except Exception as exc:
+        gc.collect()
+        return AgyResult(text="", exit_code=1, stderr=str(exc))
+    finally:
+        _ACTIVE_PROC.pop(cwd, None)
 
-    stdout = completed.stdout
+    exit_code = proc.returncode if proc else 0
+    if exit_code in (-9, -15, 137, 143):
+        gc.collect()
+        return AgyResult(text="🛑 agy execution was aborted.", exit_code=exit_code, stderr="Aborted")
+
+    stdout = stdout_bytes
     # Cap at safety limit; mark truncation if hit
     truncated = False
     if len(stdout) > _STDOUT_CAP_BYTES:
@@ -115,11 +146,11 @@ def _run_sync(
     if truncated:
         text += "\n\n[output truncated at 1MiB]"
 
-    stderr_out = completed.stderr.decode("utf-8", errors="replace") if completed.stderr else ""
+    stderr_out = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
     gc.collect()
     return AgyResult(
         text=text,
-        exit_code=completed.returncode,
+        exit_code=exit_code,
         stderr=stderr_out,
     )
 
@@ -132,6 +163,7 @@ async def run_agy(
     model: str,
     mode: str,
     agy_path: str,
+    effort: str = "",
     timeout: float | None = None,
     print_timeout: str = "15m",
 ) -> AgyResult:
@@ -142,6 +174,7 @@ async def run_agy(
         has_session=has_session,
         model=model,
         mode=mode,
+        effort=effort,
         print_timeout=print_timeout,
         chat_dir=chat_dir,
     )

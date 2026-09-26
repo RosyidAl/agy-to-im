@@ -150,3 +150,41 @@ async def test_cd_default_fallback(tmp_path: Path) -> None:
     assert reply is not None
     assert "Switched working directory" in reply.text
     assert cs.chat_dir == str(default_dir.resolve())
+
+
+async def test_effort_command() -> None:
+    cs = _state()
+    reply = await handle_text_command(_FakeMsg("/effort"), cs, _cfg())
+    assert reply is not None
+    assert "effort" in reply.text.lower()
+
+    reply = await handle_text_command(_FakeMsg("/effort high"), cs, _cfg())
+    assert reply is not None
+    assert "high" in reply.text
+    assert cs.effort == "high"
+
+    reply = await handle_text_command(_FakeMsg("/effort invalid"), cs, _cfg())
+    assert reply is not None
+    assert "unsupported" in reply.text.lower()
+
+
+async def test_callback_effort_choice() -> None:
+    cs = _state()
+    cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="e:medium")
+    reply = handle_callback(cq, cs, _cfg())
+    assert cs.effort == "medium"
+    assert "medium" in reply.toast.lower()
+
+    cq_reset = CallbackQuery(update_id=2, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="e:_DEFAULT")
+    reply_reset = handle_callback(cq_reset, cs, _cfg())
+    assert cs.effort == ""
+    assert "default" in reply_reset.toast.lower()
+
+
+async def test_stop_command() -> None:
+    cs = _state()
+    reply = await handle_text_command(_FakeMsg("/stop"), cs, _cfg())
+    assert reply is not None
+    assert "no active agy process" in reply.text.lower()
+
+

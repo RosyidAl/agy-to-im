@@ -171,3 +171,27 @@ def test_build_args_plan_sandbox() -> None:
     assert "--mode" in args and "plan" in args
     assert "--sandbox" in args
     assert "-p" in args and "run-security-scan" in args
+
+
+def test_build_args_effort() -> None:
+    from src.agy_runner import _build_args
+
+    args = _build_args(
+        agy_path="/usr/bin/agy",
+        prompt="hello",
+        has_session=False,
+        model="",
+        mode="code",
+        print_timeout="15m",
+        chat_dir="/tmp/test",
+        effort="high",
+    )
+    assert "--effort" in args
+    assert "high" in args
+
+
+def test_abort_turn_when_not_running() -> None:
+    from src.agy_runner import abort_turn
+
+    assert abort_turn("/nonexistent/chat/dir") is False
+

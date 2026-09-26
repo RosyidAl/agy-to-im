@@ -60,6 +60,7 @@ async def execute_agy(
             has_session=cs.has_session,
             model=cs.model or cfg.agy.model,
             mode=cs.mode or cfg.agy.mode,
+            effort=getattr(cs, "effort", ""),
             agy_path=agy_path,
             timeout=AGY_TIMEOUT_S,
         )
