@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
 from src.agy_runner import AgyResult
-from src.commands import BridgeReply, handle_callback, handle_text_command
+from src.commands import BOT_COMMANDS, BridgeReply, handle_callback, handle_text_command
 from src.config import Config, load_config
 from src.health import memory_healthy, record_error, record_turn, start_server
 from src.media import build_media_prompt, clean_inbox
@@ -46,6 +46,12 @@ class _TelegramLike(Protocol):
     ) -> None: ...
     async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None: ...
     async def send_chat_action(self, chat_id: int, action: str = "typing") -> None: ...
+    async def set_my_commands(
+        self, commands: list[dict[str, str]], *, scope: dict[str, Any] | None = None
+    ) -> dict[str, Any]: ...
+    async def send_document(
+        self, chat_id: int, file_path: str | Path, *, caption: str = ""
+    ) -> int | None: ...
 
 
 RunAgyFunc = Callable[..., Awaitable[AgyResult]]
@@ -103,6 +109,166 @@ def _format_timeout_reply() -> str:
     )
 
 
+OUTBOUND_EXTS = {".pdf", ".docx", ".xlsx", ".pptx", ".csv", ".zip", ".tar.gz", ".png", ".jpg", ".jpeg", ".svg"}
+
+
+_SENT_DOCUMENTS: dict[int, set[tuple[str, float, int]]] = {}
+
+
+def clear_sent_documents(chat_id: int | None = None) -> None:
+    """Clear sent documents cache (useful for testing or session reset)."""
+    if chat_id is not None:
+        _SENT_DOCUMENTS.pop(chat_id, None)
+    else:
+        _SENT_DOCUMENTS.clear()
+
+
+async def _detect_and_send_output_files(
+    text: str, chat_dir: str, tg: _TelegramLike, chat_id: int,
+    initial_files: set[Path] | None = None,
+) -> None:
+    """Detect and send any newly created or referenced files (e.g. PDF/docs)."""
+    cd = Path(chat_dir).resolve()
+    candidates: list[Path] = []
+
+    import re
+    # 1. Match file:// URLs in text
+    for match in re.finditer(r"file://([^\s\)\`\"']+)", text):
+        p = Path(match.group(1)).resolve()
+        if p.is_file() and p.suffix.lower() in OUTBOUND_EXTS:
+            candidates.append(p)
+
+    # 2. Match backticked file names or paths in text
+    for match in re.finditer(r"`([^`]+)`", text):
+        raw_p = match.group(1).strip()
+        p = Path(raw_p)
+        if not p.is_absolute():
+            p = (cd / p).resolve()
+        if p.is_file() and p.suffix.lower() in OUTBOUND_EXTS:
+            candidates.append(p)
+
+    # 3. Check newly created files in chat_dir
+    if initial_files is not None and cd.is_dir():
+        try:
+            for item in cd.iterdir():
+                if item.is_file() and item not in initial_files:
+                    if item.suffix.lower() in OUTBOUND_EXTS and not item.name.startswith("."):
+                        candidates.append(item.resolve())
+        except Exception:
+            pass
+
+    # Deduplicate and send
+    seen: set[Path] = set()
+    for doc in candidates:
+        if doc in seen or not doc.is_file():
+            continue
+        seen.add(doc)
+        # Avoid sending internal files or inbox files
+        try:
+            rel_parts = doc.relative_to(cd).parts[:-1]
+        except Exception:
+            rel_parts = doc.parts[:-1]
+        if any(part.startswith(".") or part == "okf_memory" for part in rel_parts):
+            continue
+        try:
+            stat = doc.stat()
+            sz_kb = stat.st_size // 1024
+            if sz_kb > 50 * 1024:  # Telegram 50MB limit
+                continue
+
+            file_sig = (str(doc.resolve()), stat.st_mtime, stat.st_size)
+            if chat_id in _SENT_DOCUMENTS and file_sig in _SENT_DOCUMENTS[chat_id]:
+                LOG.info("skipping already sent document chat=%d file=%s", chat_id, doc.name)
+                continue
+
+            await tg.send_document(chat_id, doc, caption=f"📄 {doc.name}")
+            _SENT_DOCUMENTS.setdefault(chat_id, set()).add(file_sig)
+            LOG.info("sent document chat=%d file=%s (%d KB)", chat_id, doc.name, sz_kb)
+        except Exception as exc:
+            LOG.warning("failed to send document chat=%d file=%s: %s", chat_id, doc, exc)
+
+
+def _group_inbound_messages(messages: list[InboundMessage]) -> list[InboundMessage]:
+    """Group consecutive messages from the same chat, e.g. media albums or multi-file uploads."""
+    if not messages:
+        return []
+
+    grouped: list[InboundMessage] = []
+    current_batch: list[InboundMessage] = []
+
+    def flush_batch() -> None:
+        nonlocal current_batch
+        if not current_batch:
+            return
+        if len(current_batch) == 1:
+            grouped.append(current_batch[0])
+        else:
+            texts: list[str] = []
+            seen_texts: set[str] = set()
+            for m in current_batch:
+                t = (m.text or "").strip()
+                if t and t not in seen_texts:
+                    seen_texts.add(t)
+                    texts.append(t)
+            combined_text = "\n".join(texts)
+
+            docs: list[dict[str, Any]] = []
+            for m in current_batch:
+                if m.documents:
+                    docs.extend(m.documents)
+                elif m.document:
+                    docs.append(m.document)
+
+            all_photos: list[list[dict[str, Any]]] = []
+            for m in current_batch:
+                if m.photos:
+                    all_photos.extend(m.photos)
+                elif m.photo:
+                    all_photos.append(m.photo)
+
+            mgid = next((m.media_group_id for m in current_batch if m.media_group_id), None)
+            merged = InboundMessage(
+                update_id=max(m.update_id for m in current_batch),
+                chat_id=current_batch[0].chat_id,
+                user_id=current_batch[0].user_id,
+                text=combined_text,
+                photo=all_photos[-1] if all_photos else None,
+                document=docs[0] if docs else None,
+                media_group_id=mgid,
+                documents=docs if docs else None,
+                photos=all_photos if all_photos else None,
+            )
+            grouped.append(merged)
+        current_batch = []
+
+    for msg in messages:
+        if msg.text.startswith("/"):
+            flush_batch()
+            grouped.append(msg)
+            continue
+
+        if not current_batch:
+            current_batch.append(msg)
+            continue
+
+        prev = current_batch[-1]
+        same_chat = (msg.chat_id == prev.chat_id and msg.user_id == prev.user_id)
+        same_mgid = bool(msg.media_group_id and prev.media_group_id and msg.media_group_id == prev.media_group_id)
+        has_media = bool(
+            msg.document or msg.documents or msg.photo or msg.photos
+            or prev.document or prev.documents or prev.photo or prev.photos
+        )
+
+        if same_chat and (same_mgid or has_media):
+            current_batch.append(msg)
+        else:
+            flush_batch()
+            current_batch.append(msg)
+
+    flush_batch()
+    return grouped
+
+
 async def _do_turn(
     msg: InboundMessage, tg: _TelegramLike, cs: ChatState,
     cfg: Config, agy_path: str,
@@ -114,7 +280,29 @@ async def _do_turn(
         await tg.send_chat_action(msg.chat_id, "typing")
     except Exception:
         pass
-    text, code = await execute_agy(tg, msg.chat_id, msg, cs, cfg, agy_path)
+
+    # Instant feedback: Send progressive status placeholder within <300ms
+    placeholder_mid: int | None = None
+    try:
+        placeholder_mid = await tg.send_message(msg.chat_id, "⏳ Menghubungkan ke agy...")
+    except Exception as err:
+        LOG.warning("Failed to send status placeholder: %s", err)
+
+    initial_files = set(Path(cs.chat_dir).iterdir()) if Path(cs.chat_dir).is_dir() else set()
+    effective_msg = InboundMessage(
+        update_id=msg.update_id,
+        chat_id=msg.chat_id,
+        user_id=msg.user_id,
+        text=prompt,
+        photo=msg.photo,
+        document=msg.document,
+    )
+    try:
+        turn_res = await execute_agy(tg, msg.chat_id, effective_msg, cs, cfg, agy_path, placeholder_mid=placeholder_mid)
+    except TypeError:
+        turn_res = await execute_agy(tg, msg.chat_id, effective_msg, cs, cfg, agy_path)
+    text, code = turn_res[0], turn_res[1]
+    has_tools = getattr(turn_res, "has_tools", False)
     if code == 124:
         record_error()
         reply = _format_timeout_reply()
@@ -133,10 +321,34 @@ async def _do_turn(
         clean_inbox(cs.chat_dir)
     except Exception:
         pass
-    try:
-        await tg.send_message(msg.chat_id, reply)
-    except Exception as err:
-        LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
+
+    response_mid = getattr(turn_res, "response_mid", None)
+
+    edited = False
+    if response_mid is not None:
+        try:
+            await tg.edit_message_text(msg.chat_id, response_mid, reply)
+            edited = True
+        except Exception as err:
+            LOG.warning("editMessageText (response_mid) failed chat=%s: %s", msg.chat_id, err)
+    elif not has_tools and placeholder_mid is not None and len(reply) <= 4000:
+        try:
+            await tg.edit_message_text(msg.chat_id, placeholder_mid, reply)
+            edited = True
+        except Exception as err:
+            LOG.warning("editMessageText failed chat=%s: %s, falling back to sendMessage", msg.chat_id, err)
+
+    if not edited:
+        try:
+            await tg.send_message(msg.chat_id, reply)
+        except Exception as err:
+            LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
+
+    if code == 0:
+        try:
+            await _detect_and_send_output_files(reply, cs.chat_dir, tg, msg.chat_id, initial_files)
+        except Exception as err:
+            LOG.error("sendDocument failed chat=%s: %s", msg.chat_id, err)
 
 
 async def _process_text(
@@ -156,8 +368,15 @@ async def _process_text(
         save_state(state_path, state)
         try:
             await tg.send_message(msg.chat_id, reply.text, keyboard=reply.keyboard)
+            if reply.document_path and reply.document_path.is_file():
+                await tg.send_document(msg.chat_id, reply.document_path, caption=f"📄 {reply.document_path.name}")
         except Exception as err:
             LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
+        return
+
+    # When bot is inactive, silently ignore non-command messages
+    if not cs.active:
+        LOG.info("drop inactive chat=%s user=%s", msg.chat_id, msg.user_id)
         return
 
     status = await _QUEUE.submit(msg)
@@ -165,8 +384,10 @@ async def _process_text(
         await tg.send_message(msg.chat_id, status)
         return
 
-    await _do_turn(msg, tg, cs, cfg, agy_path)
-    _QUEUE.complete()
+    try:
+        await _do_turn(msg, tg, cs, cfg, agy_path)
+    finally:
+        _QUEUE.complete()
 
     while True:
         next_item = _QUEUE.next()
@@ -174,9 +395,11 @@ async def _process_text(
             break
         nxt_msg, nxt_fut = next_item
         nxt_cs = _ensure_chat_state(state, nxt_msg.chat_id, chats_root)
-        await _do_turn(nxt_msg, tg, nxt_cs, cfg, agy_path)
-        _QUEUE.complete()
-        nxt_fut.set_result(None)
+        try:
+            await _do_turn(nxt_msg, tg, nxt_cs, cfg, agy_path)
+        finally:
+            _QUEUE.complete()
+            nxt_fut.set_result(None)
 
     save_state(state_path, state)
 
@@ -228,6 +451,17 @@ async def _fetch_updates(tg: _TelegramLike, offset: int) -> list[dict[str, Any]]
         return []
 
 
+async def _register_bot_commands(tg: _TelegramLike) -> None:
+    try:
+        res = await tg.set_my_commands(BOT_COMMANDS)
+        if isinstance(res, dict) and res.get("ok"):
+            LOG.info("Registered %d bot commands with Telegram", len(BOT_COMMANDS))
+        else:
+            LOG.warning("Failed to register bot commands with Telegram: %s", res)
+    except Exception as err:
+        LOG.warning("Error registering bot commands: %s", err)
+
+
 async def run(
     *, cfg: Config, state_path: Path, chats_root: Path,
     tg: _TelegramLike, agy_path: str, info: DaemonInfo,
@@ -243,6 +477,7 @@ async def run(
     state = load_state(state_path, chats_root, extra_allowed_dirs=allowed_dirs)
     tick = 0
     async with tg:
+        await _register_bot_commands(tg)
         while not stop_event.is_set():
             tick += 1
             # Health gate: check memory every ~30 loop iterations (~30s at idle,
@@ -256,20 +491,28 @@ async def run(
             updates = await _fetch_updates(tg, state.last_update_id + 1)
             wh_updates = drain_webhook_updates()
             updates.extend(wh_updates)
+
+            # If any update in the batch has media/attachments, debounce briefly
+            # to collect any other attachments arriving in the same burst/album
+            has_media = any(
+                (upd.get("message") or {}).get("document")
+                or (upd.get("message") or {}).get("photo")
+                or (upd.get("message") or {}).get("media_group_id")
+                for upd in updates
+            )
+            if has_media:
+                try:
+                    await asyncio.sleep(0.3)
+                    max_uid = max((int(u.get("update_id", 0)) for u in updates), default=state.last_update_id)
+                    more_updates = await _fetch_updates(tg, max_uid + 1, timeout=0)
+                    if more_updates:
+                        updates.extend(more_updates)
+                except Exception:
+                    pass
+
+            inbound_msgs: list[InboundMessage] = []
             for upd in updates:
                 state.last_update_id = max(state.last_update_id, int(upd.get("update_id", 0)))
-
-                msg = parse_update_for_daemon(upd)
-                if msg is not None:
-                    allowed, wait = _QUEUE.check_ratelimit(msg.user_id)
-                    if not allowed:
-                        await tg.send_message(msg.chat_id, f"⏳ Rate limit. Wait {wait}s.")
-                        continue
-                    await _process_text(
-                        msg, tg, state, state_path, chats_root,
-                        cfg, agy_path, info,
-                    )
-                    continue
 
                 cq = parse_callback_for_daemon(upd)
                 if cq is not None:
@@ -277,6 +520,21 @@ async def run(
                         cq, tg, state, state_path, chats_root, cfg, info,
                     )
                     continue
+
+                msg = parse_update_for_daemon(upd)
+                if msg is not None:
+                    inbound_msgs.append(msg)
+
+            grouped_msgs = _group_inbound_messages(inbound_msgs)
+            for msg in grouped_msgs:
+                allowed, wait = _QUEUE.check_ratelimit(msg.user_id)
+                if not allowed:
+                    await tg.send_message(msg.chat_id, f"⏳ Rate limit. Wait {wait}s.")
+                    continue
+                await _process_text(
+                    msg, tg, state, state_path, chats_root,
+                    cfg, agy_path, info,
+                )
 
             if not updates:
                 await asyncio.sleep(0)

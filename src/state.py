@@ -35,6 +35,7 @@ class ChatState:
     effort: str = ""  # "" → default; values: "low" | "medium" | "high" | "max"
     photo_enabled: bool = True  # toggle for photo processing
     turn_count: int = 0  # successful turns served on this chat
+    active: bool = True  # False → bot ignores non-command messages
 
 
 @dataclass
@@ -121,6 +122,7 @@ def _safe_chat_state(
         effort=_safe_effort(raw.get("effort", "")),
         photo_enabled=_safe_bool(raw.get("photo_enabled", True)),
         turn_count=_safe_turn_count(raw.get("turn_count", 0)),
+        active=_safe_bool(raw.get("active", True)),
     )
 
 
