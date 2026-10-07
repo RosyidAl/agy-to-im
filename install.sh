@@ -3,6 +3,15 @@
 # Idempotent: safe to re-run.
 set -euo pipefail
 
+# Autostart on login/WSL boot is opt-in. Pass --autostart to enable it.
+AUTOSTART=0
+for arg in "$@"; do
+    case "$arg" in
+        --autostart) AUTOSTART=1 ;;
+        *) echo "Unknown option: $arg (supported: --autostart)" >&2; exit 2 ;;
+    esac
+done
+
 PLUGIN_DIR="${HOME}/.gemini/extensions/antigravity-telegram-bridge"
 RUNTIME_DIR="${HOME}/.antigravity/bridge"
 LOG_DIR="${RUNTIME_DIR}/logs"
@@ -47,9 +56,15 @@ sed \
     -e "s|__VENV_PYTHON__|${VENV_PYTHON}|g" \
     "${SERVICE_TEMPLATE}" > "${SERVICE_TARGET}"
 
-echo "==> Reloading systemd --user and enabling unit"
+echo "==> Reloading systemd --user"
 systemctl --user daemon-reload
-systemctl --user enable antigravity-telegram-bridge.service
+if [[ "${AUTOSTART}" -eq 1 ]]; then
+    echo "==> Enabling autostart (--autostart)"
+    systemctl --user enable antigravity-telegram-bridge.service
+else
+    echo "==> Autostart disabled (manual start only). Re-run with --autostart to enable."
+    systemctl --user disable antigravity-telegram-bridge.service >/dev/null 2>&1 || true
+fi
 
 if [[ ! -f "${PLUGIN_DIR}/config.json" ]]; then
     cat <<EOF

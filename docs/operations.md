@@ -132,9 +132,19 @@ What `install.sh` does (idempotent):
 3. Builds `.venv/` (skipped if present).
 4. Installs in editable mode: `uv pip install -e .`.
 5. Renders the systemd unit template to `~/.config/systemd/user/antigravity-telegram-bridge.service`.
-6. `systemctl --user daemon-reload && systemctl --user enable antigravity-telegram-bridge.service`.
+6. `systemctl --user daemon-reload`.
+7. Autostart is **opt-in**: by default the unit is left (or made) `disabled`, so the bridge
+   does not start on login / WSL boot. Run `bash install.sh --autostart` to
+   `systemctl --user enable` it instead.
 
 The installer does **not** start the service.
+
+To toggle autostart later without re-running the installer:
+
+```sh
+systemctl --user disable antigravity-telegram-bridge.service   # manual start only
+systemctl --user enable  antigravity-telegram-bridge.service   # start on login / WSL boot
+```
 
 ### Optional: enable lingering for headless boot
 
