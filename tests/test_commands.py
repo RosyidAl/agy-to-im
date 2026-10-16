@@ -217,24 +217,21 @@ async def test_callback_model_without_effort_finishes() -> None:
     assert "R" in callback_datas
 
 
-async def test_callback_claude_55_triggers_effort_picker() -> None:
+async def test_callback_claude_46_direct_selection() -> None:
     cs = _state()
-    cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="m:claude-opus-5-5")
+    cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="m:claude-sonnet-4-6")
     reply = handle_callback(cq, cs, _cfg())
-    assert cs.model == "claude-opus-5-5"
-    assert reply.keyboard is not None
-    callback_datas = [btn["callback_data"] for row in reply.keyboard for btn in row]
-    assert {"e:low", "e:medium", "e:high"} <= set(callback_datas)
-    assert "e:max" not in callback_datas
+    assert cs.model == "claude-sonnet-4-6"
+    assert "Claude Sonnet 4.6" in reply.toast
 
 
-async def test_model_picker_lists_claude_55() -> None:
+async def test_model_picker_lists_claude_46() -> None:
     reply = await handle_text_command(_FakeMsg("/model"), _state(), _cfg())
     assert reply is not None and reply.keyboard is not None
     labels = " ".join(btn["text"] for row in reply.keyboard for btn in row)
-    assert "Claude Opus 5.5" in labels
-    assert "Claude Sonnet 5.5" in labels
-    assert "4.6" not in labels
+    assert "Claude Sonnet 4.6" in labels
+    assert "Claude Opus 4.6" in labels
+    assert "Claude Sonnet 5.5" not in labels
 
 
 async def test_bot_commands_list_validity() -> None:
