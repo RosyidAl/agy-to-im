@@ -23,14 +23,13 @@ jobs:
           enable-cache: true
           version: "latest"
 
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: uv pip install --system -e ".[dev]"
+      - name: Set up virtual environment and install dependencies
+        run: |
+          uv venv .venv --python ${{ matrix.python-version }}
+          uv pip install -e ".[dev]"
 
       - name: Run Pytest
-        run: pytest -v
+        run: uv run pytest -v
 
   deploy:
     name: Deploy to Azure VPS (CD)
