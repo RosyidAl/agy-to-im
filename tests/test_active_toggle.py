@@ -13,8 +13,6 @@ from src.state import ChatState, State, load_state, save_state
 from src.telegram import CallbackQuery
 
 
-pytestmark = pytest.mark.asyncio
-
 
 def _cfg() -> Config:
     return Config(

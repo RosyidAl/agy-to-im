@@ -279,38 +279,44 @@ async def test_getfile_not_found(tmp_path: Path) -> None:
     assert "not found" in reply.text
 
 
-async def test_mcp_command_lists_servers() -> None:
+async def test_mcp_command_lists_servers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("src.commands._list_mcp_servers", lambda: [{"name": "fake-server", "type": "stdio", "status": "enabled", "cmd": ""}])
     reply = await handle_text_command(_FakeMsg("/mcp"), _state(), _cfg())
     assert reply is not None
     assert "MCP" in reply.text
 
 
-async def test_mcp_command_inspect_unknown() -> None:
+async def test_mcp_command_inspect_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("src.commands._list_mcp_servers", lambda: [{"name": "fake-server", "type": "stdio", "status": "enabled", "cmd": ""}])
     reply = await handle_text_command(_FakeMsg("/mcp nonexistent_server_12345"), _state(), _cfg())
     assert reply is not None
     assert "not found" in reply.text
 
 
-async def test_skills_command_lists_skills() -> None:
+async def test_skills_command_lists_skills(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("src.commands._list_skills", lambda *args, **kwargs: [{"name": "mock-skill", "folder": "mock-skill", "description": "mock", "path": "/tmp"}])
     reply = await handle_text_command(_FakeMsg("/skills"), _state(), _cfg())
     assert reply is not None
     assert "Skills" in reply.text
 
 
-async def test_skills_command_inspect_unknown() -> None:
+async def test_skills_command_inspect_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("src.commands._list_skills", lambda *args, **kwargs: [{"name": "mock-skill", "folder": "mock-skill", "description": "mock", "path": "/tmp"}])
     reply = await handle_text_command(_FakeMsg("/skills nonexistent_skill_12345"), _state(), _cfg())
     assert reply is not None
     assert "not found" in reply.text
 
 
-async def test_callback_nav_mcp() -> None:
+async def test_callback_nav_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("src.commands._list_mcp_servers", lambda: [{"name": "fake-server", "type": "stdio", "status": "enabled", "cmd": ""}])
     cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="nav:mcp")
     reply = handle_callback(cq, _state(), _cfg())
     assert reply is not None
     assert "MCP" in reply.text
 
 
-async def test_callback_nav_skills() -> None:
+async def test_callback_nav_skills(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("src.commands._list_skills", lambda *args, **kwargs: [{"name": "mock-skill", "folder": "mock-skill", "description": "mock", "path": "/tmp"}])
     cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="nav:skills")
     reply = handle_callback(cq, _state(), _cfg())
     assert reply is not None
