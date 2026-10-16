@@ -192,19 +192,21 @@ async def build_media_prompt(
     wd = state.chat_dir
     inbox_cfg = cfg.safety.inbox
 
-    if msg.photo and state.photo_enabled:
-        largest = max(msg.photo, key=lambda p: p.get("file_size", 0))
-        fsize = largest.get("file_size", 0)
-        if fsize > cfg.safety.media.max_photo_bytes:
-            await tg.send_message(msg.chat_id, "📸 Photo too large")
-        else:
-            data = await _safe_download(tg, largest["file_id"], msg.chat_id, "photo.jpg")
-            if data:
-                path = save_to_inbox(wd, f"photo_{largest['file_id'][:12]}.jpg", data, inbox_cfg.max_total_bytes)
-                parts.append(f"[Photo: {path} — {len(data)//1024}KB]")
+    photos_to_process = msg.photos if getattr(msg, "photos", None) else ([msg.photo] if msg.photo else [])
+    for photo_sizes in photos_to_process:
+        if state.photo_enabled:
+            largest = max(photo_sizes, key=lambda p: p.get("file_size", 0))
+            fsize = largest.get("file_size", 0)
+            if fsize > cfg.safety.media.max_photo_bytes:
+                await tg.send_message(msg.chat_id, "📸 Photo too large")
+            else:
+                data = await _safe_download(tg, largest["file_id"], msg.chat_id, "photo.jpg")
+                if data:
+                    path = save_to_inbox(wd, f"photo_{largest['file_id'][:12]}.jpg", data, inbox_cfg.max_total_bytes)
+                    parts.append(f"[Photo: {path} — {len(data)//1024}KB]")
 
-    if msg.document:
-        doc = msg.document
+    docs_to_process = msg.documents if getattr(msg, "documents", None) else ([msg.document] if msg.document else [])
+    for doc in docs_to_process:
         fname = doc.get("file_name", "unknown")
         mime = doc.get("mime_type", "")
         fsize = doc.get("file_size", 0)

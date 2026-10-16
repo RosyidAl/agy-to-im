@@ -44,12 +44,16 @@ class _FakeMsg:
         chat_id: int = 42,
         photo: list[dict] | None = None,
         document: dict | None = None,
+        documents: list[dict] | None = None,
+        photos: list[list[dict]] | None = None,
     ) -> None:
         self.text = text
         self.chat_id = chat_id
         self.user_id = 99
         self.photo = photo
         self.document = document
+        self.documents = documents
+        self.photos = photos
 
 
 class _FakeState:
@@ -253,3 +257,38 @@ async def test_prompt_download_error_reported(tmp_path: Path) -> None:
     result = await build_media_prompt(msg, tg, _FakeState(str(tmp_path)), _fake_cfg())
     assert result is None
     assert any("Download failed" in s for _, s in tg.sent)
+
+
+async def test_prompt_multiple_documents(tmp_path: Path) -> None:
+    tg = _FakeTG(get_file_data=b"file content")
+    msg = _FakeMsg(
+        text="process both files",
+        documents=[
+            {
+                "file_id": "doc1",
+                "file_name": "target.docx",
+                "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "file_size": 500,
+            },
+            {
+                "file_id": "doc2",
+                "file_name": "source.docx",
+                "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "file_size": 400,
+            },
+        ],
+    )
+    # Configure document categories to accept docx
+    cats = {
+        "documents": CategoryConfig(
+            mime_types=["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+            extensions=[".docx"],
+            routing="pass",
+        )
+    }
+    result = await build_media_prompt(msg, tg, _FakeState(str(tmp_path)), _fake_cfg(cats))
+    assert result is not None
+    assert "process both files" in result
+    assert "target.docx" in result
+    assert "source.docx" in result
+    assert result.count("[File:") == 2

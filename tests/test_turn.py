@@ -45,8 +45,23 @@ async def test_execute_agy_returns_reply_and_records_metrics(monkeypatch: pytest
     assert code == 0
     assert text == "reply text"
     assert tg.actions
-    assert calls[0]["prompt"] == "hello"
+    assert calls[0]["prompt"].startswith("<TELEGRAM_OUTPUT_STYLE>")
+    assert calls[0]["prompt"].endswith("\n\nhello")
     assert calls[0]["chat_dir"] == "/tmp/chat"
+
+
+async def test_execute_agy_skips_style_hint_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    async def fake_run_agy(prompt: str, **_: Any) -> AgyResult:
+        calls.append(prompt)
+        return AgyResult(text="ok", exit_code=0, stderr="")
+
+    monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
+    cs = ChatState(chat_dir="/tmp/chat", style_hint=False)
+    cfg = Config(telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]), agy=AgyConfig())
+    await execute_agy(_FakeTG(), 42, _FakeMsg(text="hello"), cs, cfg, "/usr/bin/agy")
+    assert calls == ["hello"]
 
 
 async def test_execute_agy_returns_timeout_reply(monkeypatch: pytest.MonkeyPatch) -> None:

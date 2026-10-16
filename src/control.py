@@ -90,6 +90,20 @@ def _check_telegram(report: list[str], bot_token: str) -> None:
         d = r.json()
         if d.get("ok"):
             report.append(f"✓ telegram token valid (bot @{d['result'].get('username')})")
+            from src.commands import BOT_COMMANDS
+            try:
+                r2 = httpx.post(
+                    f"https://api.telegram.org/bot{bot_token}/setMyCommands",
+                    json={"commands": BOT_COMMANDS},
+                    timeout=10,
+                )
+                d2 = r2.json()
+                if d2.get("ok"):
+                    report.append(f"✓ registered {len(BOT_COMMANDS)} bot commands with Telegram")
+                else:
+                    report.append(f"⚠️ warning: failed to register bot commands: {d2.get('description')}")
+            except Exception as cmd_err:
+                report.append(f"⚠️ warning: registering bot commands failed: {cmd_err}")
         else:
             report.append(f"✗ telegram token rejected: {d.get('description')}")
     except Exception as err:

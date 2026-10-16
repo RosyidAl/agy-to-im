@@ -1,6 +1,8 @@
 """Unit tests for src.commands — bridge command handlers."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from src.commands import handle_callback, handle_text_command
 from src.config import AgyConfig, Config, TelegramConfig
 from src.state import ChatState
@@ -14,8 +16,8 @@ def _cfg(model: str = "", mode: str = "code") -> Config:
     )
 
 
-def _state() -> ChatState:
-    return ChatState(chat_dir="/tmp/chat")
+def _state(chat_dir: str = "/tmp/chat") -> ChatState:
+    return ChatState(chat_dir=chat_dir)
 
 
 class _FakeMsg:
@@ -188,3 +190,150 @@ async def test_stop_command() -> None:
     assert "no active agy process" in reply.text.lower()
 
 
+async def test_callback_model_triggers_effort_picker() -> None:
+    cs = _state()
+    cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="m:gemini-3.8-flash")
+    reply = handle_callback(cq, cs, _cfg())
+    assert cs.model == "gemini-3.8-flash"
+    assert reply.keyboard is not None
+    # Verify effort buttons exist in the keyboard
+    callback_datas = [btn["callback_data"] for row in reply.keyboard for btn in row]
+    assert "e:low" in callback_datas
+    assert "e:medium" in callback_datas
+    assert "e:high" in callback_datas
+    assert "nav:model" in callback_datas
+
+
+async def test_callback_model_without_effort_finishes() -> None:
+    cs = _state()
+    cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="m:gpt-oss-120b-medium")
+    reply = handle_callback(cq, cs, _cfg())
+    assert cs.model == "gpt-oss-120b-medium"
+    assert "GPT-OSS 120B" in reply.toast
+    assert reply.keyboard is not None
+    callback_datas = [btn["callback_data"] for row in reply.keyboard for btn in row]
+    # Direct return to settings
+    assert "nav:model" in callback_datas
+    assert "R" in callback_datas
+
+
+async def test_callback_claude_55_triggers_effort_picker() -> None:
+    cs = _state()
+    cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="m:claude-opus-5-5")
+    reply = handle_callback(cq, cs, _cfg())
+    assert cs.model == "claude-opus-5-5"
+    assert reply.keyboard is not None
+    callback_datas = [btn["callback_data"] for row in reply.keyboard for btn in row]
+    assert {"e:low", "e:medium", "e:high"} <= set(callback_datas)
+    assert "e:max" not in callback_datas
+
+
+async def test_model_picker_lists_claude_55() -> None:
+    reply = await handle_text_command(_FakeMsg("/model"), _state(), _cfg())
+    assert reply is not None and reply.keyboard is not None
+    labels = " ".join(btn["text"] for row in reply.keyboard for btn in row)
+    assert "Claude Opus 5.5" in labels
+    assert "Claude Sonnet 5.5" in labels
+    assert "4.6" not in labels
+
+
+async def test_bot_commands_list_validity() -> None:
+    import re
+    from src.commands import BOT_COMMANDS
+
+    assert len(BOT_COMMANDS) >= 10
+    cmd_pattern = re.compile(r"^[a-z0-9_]{1,32}$")
+    for item in BOT_COMMANDS:
+        cmd = item["command"]
+        desc = item["description"]
+        assert cmd_pattern.match(cmd), f"Invalid command name: {cmd}"
+        assert 1 <= len(desc) <= 256, f"Description length invalid for {cmd}"
+
+
+async def test_commands_alias_to_help() -> None:
+    reply = await handle_text_command(_FakeMsg("/commands"), _state(), _cfg())
+    assert reply is not None
+    assert "Commands" in reply.text
+
+
+async def test_getfile_command(tmp_path: Path) -> None:
+    test_file = tmp_path / "report.pdf"
+    test_file.write_bytes(b"%PDF content")
+    cs = _state(chat_dir=str(tmp_path))
+    reply = await handle_text_command(_FakeMsg("/getfile report.pdf"), cs, _cfg())
+    assert reply is not None
+    assert "Sending" in reply.text
+    assert reply.document_path == test_file
+
+
+async def test_getfile_no_args() -> None:
+    reply = await handle_text_command(_FakeMsg("/getfile"), _state(), _cfg())
+    assert reply is not None
+    assert "Usage" in reply.text
+
+
+async def test_getfile_not_found(tmp_path: Path) -> None:
+    cs = _state(chat_dir=str(tmp_path))
+    reply = await handle_text_command(_FakeMsg("/getfile missing.pdf"), cs, _cfg())
+    assert reply is not None
+    assert "not found" in reply.text
+
+
+async def test_mcp_command_lists_servers() -> None:
+    reply = await handle_text_command(_FakeMsg("/mcp"), _state(), _cfg())
+    assert reply is not None
+    assert "MCP" in reply.text
+
+
+async def test_mcp_command_inspect_unknown() -> None:
+    reply = await handle_text_command(_FakeMsg("/mcp nonexistent_server_12345"), _state(), _cfg())
+    assert reply is not None
+    assert "not found" in reply.text
+
+
+async def test_skills_command_lists_skills() -> None:
+    reply = await handle_text_command(_FakeMsg("/skills"), _state(), _cfg())
+    assert reply is not None
+    assert "Skills" in reply.text
+
+
+async def test_skills_command_inspect_unknown() -> None:
+    reply = await handle_text_command(_FakeMsg("/skills nonexistent_skill_12345"), _state(), _cfg())
+    assert reply is not None
+    assert "not found" in reply.text
+
+
+async def test_callback_nav_mcp() -> None:
+    cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="nav:mcp")
+    reply = handle_callback(cq, _state(), _cfg())
+    assert reply is not None
+    assert "MCP" in reply.text
+
+
+async def test_callback_nav_skills() -> None:
+    cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="nav:skills")
+    reply = handle_callback(cq, _state(), _cfg())
+    assert reply is not None
+    assert "Skills" in reply.text
+
+
+
+async def test_style_command_toggles_hint() -> None:
+    cs = _state()
+    assert cs.style_hint is True
+    reply = await handle_text_command(_FakeMsg("/style off"), cs, _cfg())
+    assert reply is not None and cs.style_hint is False
+    reply = await handle_text_command(_FakeMsg("/style on"), cs, _cfg())
+    assert reply is not None and cs.style_hint is True
+    reply = await handle_text_command(_FakeMsg("/style"), cs, _cfg())
+    assert reply is not None and "ON" in reply.text
+
+
+def test_style_hint_persists_in_state(tmp_path: Path) -> None:
+    from src.state import State, load_state, save_state
+    root = tmp_path / "chats"
+    (root / "42").mkdir(parents=True)
+    st = State(chats={42: ChatState(chat_dir=str(root / "42"), style_hint=False)})
+    save_state(tmp_path / "s.json", st)
+    loaded = load_state(tmp_path / "s.json", root)
+    assert loaded.chats[42].style_hint is False

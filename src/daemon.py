@@ -322,16 +322,8 @@ async def _do_turn(
     except Exception:
         pass
 
-    response_mid = getattr(turn_res, "response_mid", None)
-
     edited = False
-    if response_mid is not None:
-        try:
-            await tg.edit_message_text(msg.chat_id, response_mid, reply)
-            edited = True
-        except Exception as err:
-            LOG.warning("editMessageText (response_mid) failed chat=%s: %s", msg.chat_id, err)
-    elif not has_tools and placeholder_mid is not None and len(reply) <= 4000:
+    if not has_tools and placeholder_mid is not None and len(reply) <= 4000:
         try:
             await tg.edit_message_text(msg.chat_id, placeholder_mid, reply)
             edited = True
@@ -475,6 +467,12 @@ async def run(
     if cfg.agy.default_workdir:
         allowed_dirs.append(Path(cfg.agy.default_workdir).expanduser())
     state = load_state(state_path, chats_root, extra_allowed_dirs=allowed_dirs)
+    
+    # User requested: Bot should not auto-reply to offline message dumps on startup.
+    # It should wake up ONLY when /start is explicitly sent.
+    for cs in state.chats.values():
+        cs.active = False
+        
     tick = 0
     async with tg:
         await _register_bot_commands(tg)

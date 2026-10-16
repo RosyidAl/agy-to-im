@@ -190,6 +190,28 @@ def test_build_args_effort() -> None:
     assert "high" in args
 
 
+@pytest.mark.parametrize(
+    ("model", "effort", "expected"),
+    [
+        ("claude-opus-5-5", "", ["--model", "claude-opus-5-5-medium"]),
+        ("claude-opus-5-5", "high", ["--model", "claude-opus-5-5-high"]),
+        ("claude-opus-5-5", "max", ["--model", "claude-opus-5-5-high"]),
+        ("claude-sonnet-5-5", "low", ["--model", "claude-sonnet-5-5-low"]),
+        ("claude-sonnet-5-5-high", "", ["--model", "claude-sonnet-5-5-high"]),
+        ("gemini-3.8-flash", "", ["--model", "gemini-3.8-flash-low"]),
+        ("gemini-3.8-flash", "medium", ["--model", "gemini-3.8-flash-medium"]),
+        ("gemini-3.1-pro", "medium", ["--model", "gemini-3.1-pro-high"]),
+        ("gpt-oss-120b-medium", "", ["--model", "gpt-oss-120b-medium"]),
+        ("", "high", ["--effort", "high"]),
+        ("", "", []),
+    ],
+)
+def test_resolve_model_args(model: str, effort: str, expected: list[str]) -> None:
+    from src.agy_runner import _resolve_model_args
+
+    assert _resolve_model_args(model, effort) == expected
+
+
 def test_abort_turn_when_not_running() -> None:
     from src.agy_runner import abort_turn
 

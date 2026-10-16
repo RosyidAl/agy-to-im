@@ -24,3 +24,7 @@ logs/
 *.log
 # roborev snapshots
 /.roborev/
+
+# Agent skills local symlinks
+.agents/skills/
+

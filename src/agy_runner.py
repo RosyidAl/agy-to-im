@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import json
 import os
 import subprocess
 from dataclasses import dataclass
+from typing import Any, Callable
 
 # Safety cap on stdout capture — prevents unbounded memory growth from
 # runaway agy output. 1MB is generous (typical replies are 1–5KB).
@@ -38,7 +40,7 @@ class AgyResult:
     stderr: str
 
 
-_ACTIVE_PROC: dict[str, subprocess.Popen] = {}
+_ACTIVE_PROC: dict[str, Any] = {}
 
 
 def abort_turn(chat_dir: str) -> bool:
@@ -51,6 +53,45 @@ def abort_turn(chat_dir: str) -> bool:
         except Exception:
             pass
     return False
+
+
+# Base model prefix -> (supported effort suffixes, default effort).
+# agy rejects these base IDs without an effort (e.g. "--model claude-sonnet-5-5
+# requires --effort (available: low, medium, high)"), so the bridge appends one.
+_EFFORT_SUFFIX_MODELS: dict[str, tuple[tuple[str, ...], str]] = {
+    "gemini-3.8": (("low", "medium", "high"), "low"),
+    "gemini-3.7": (("low", "medium", "high"), "low"),
+    "gemini-3.6": (("low", "medium", "high"), "low"),
+    "gemini-3.5": (("low", "medium", "high"), "low"),
+    "gemini-3.1": (("low", "high"), "low"),
+    "claude-opus-5-5": (("low", "medium", "high"), "medium"),
+    "claude-sonnet-5-5": (("low", "medium", "high"), "medium"),
+}
+_EFFORT_SUFFIXES: tuple[str, ...] = ("-low", "-medium", "-high", "-max")
+
+
+def _resolve_model_args(model: str, effort: str) -> list[str]:
+    """Map (model, effort) to agy CLI args.
+
+    Base IDs listed in _EFFORT_SUFFIX_MODELS get an effort suffix appended;
+    unsupported efforts (e.g. "max") are clamped to the highest supported tier.
+    """
+    if model and not model.endswith(_EFFORT_SUFFIXES):
+        for prefix, (supported, default) in _EFFORT_SUFFIX_MODELS.items():
+            if model.startswith(prefix):
+                if not effort:
+                    chosen = default
+                elif effort in supported:
+                    chosen = effort
+                else:
+                    chosen = supported[-1]
+                return ["--model", f"{model}-{chosen}"]
+    args: list[str] = []
+    if model:
+        args.extend(["--model", model])
+    if effort:
+        args.extend(["--effort", effort])
+    return args
 
 
 def _build_args(
@@ -73,17 +114,9 @@ def _build_args(
     else:
         args.append("--new-project")
 
-    if effort:
-        if model:
-            args.extend(["--model", model])
-        args.extend(["--effort", effort])
-    elif model:
-        # If model is a base model without explicit effort suffix, supply --effort high
-        if any(model.startswith(prefix) for prefix in ("gemini-3.8", "gemini-3.7", "gemini-3.6", "gemini-3.5", "gemini-3.1")) and not any(model.endswith(sfx) for sfx in ("-low", "-medium", "-high")):
-            args.extend(["--model", model, "--effort", "high"])
-        else:
-            args.extend(["--model", model])
+    args.extend(_resolve_model_args(model, effort))
 
+    args.append("--disable-slash-commands")
     args.append("--dangerously-skip-permissions")
 
     if mode == "plan":
@@ -92,6 +125,7 @@ def _build_args(
         args.extend(["--mode", "accept-edits"])
 
     args.extend(["--print-timeout", print_timeout])
+    args.extend(["--output-format", "stream-json"])
     return args
 
 
@@ -100,7 +134,7 @@ def _run_sync(
     cwd: str,
     timeout: float | None = None,
 ) -> AgyResult:
-    """Synchronous worker for subprocess invocation. Called via asyncio.to_thread."""
+    """Synchronous fallback worker for subprocess invocation."""
     _reap_zombies()
     proc = None
     try:
@@ -136,7 +170,6 @@ def _run_sync(
         return AgyResult(text="🛑 agy execution was aborted.", exit_code=exit_code, stderr="Aborted")
 
     stdout = stdout_bytes
-    # Cap at safety limit; mark truncation if hit
     truncated = False
     if len(stdout) > _STDOUT_CAP_BYTES:
         stdout = stdout[:_STDOUT_CAP_BYTES]
@@ -144,7 +177,7 @@ def _run_sync(
 
     text = stdout.decode("utf-8", errors="replace")
     if truncated:
-        text += "\n\n[output truncated at 1MiB]"
+        text += "\n\n[output truncated at 512KiB]"
 
     stderr_out = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
     gc.collect()
@@ -166,8 +199,9 @@ async def run_agy(
     effort: str = "",
     timeout: float | None = None,
     print_timeout: str = "15m",
+    on_event: Callable[[dict[str, Any]], Any] | None = None,
 ) -> AgyResult:
-    """Run agy in print mode. Returns when the turn ends."""
+    """Run agy with stream-json output and optional event callback."""
     args = _build_args(
         agy_path=agy_path,
         prompt=prompt,
@@ -178,4 +212,98 @@ async def run_agy(
         print_timeout=print_timeout,
         chat_dir=chat_dir,
     )
-    return await asyncio.to_thread(_run_sync, args, chat_dir, timeout)
+    _reap_zombies()
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            cwd=chat_dir,
+            env=os.environ.copy(),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _ACTIVE_PROC[chat_dir] = proc
+    except Exception as exc:
+        return AgyResult(text="", exit_code=1, stderr=str(exc))
+
+    plain_text_lines: list[str] = []
+    final_response = ""
+    result_error = ""
+
+    async def _read_stdout() -> None:
+        nonlocal final_response, result_error
+        if proc.stdout is None:
+            return
+        async for raw_line in proc.stdout:
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            if line.startswith("{") and line.endswith("}"):
+                try:
+                    data = json.loads(line)
+                    event_type = data.get("event")
+                    if event_type == "result":
+                        res = data.get("result", {})
+                        final_response = res.get("response", "")
+                        result_error = res.get("error", "")
+                    if on_event is not None:
+                        cb_res = on_event(data)
+                        if asyncio.iscoroutine(cb_res):
+                            await cb_res
+                    continue
+                except Exception:
+                    pass
+            plain_text_lines.append(line)
+
+    async def _read_stderr() -> str:
+        if proc.stderr is None:
+            return ""
+        raw = await proc.stderr.read()
+        return raw.decode("utf-8", errors="replace")
+
+    try:
+        stderr_task = asyncio.create_task(_read_stderr())
+        stdout_task = asyncio.create_task(_read_stdout())
+        if timeout:
+            await asyncio.wait_for(asyncio.gather(stdout_task, stderr_task), timeout=timeout)
+        else:
+            await asyncio.gather(stdout_task, stderr_task)
+        stderr_out = stderr_task.result()
+    except asyncio.TimeoutError:
+        if proc:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+        return AgyResult(text="", exit_code=124, stderr=f"agy timed out after {timeout}s")
+    except Exception as exc:
+        if proc:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+        return AgyResult(text="", exit_code=1, stderr=str(exc))
+    finally:
+        _ACTIVE_PROC.pop(chat_dir, None)
+
+    if proc is not None:
+        await proc.wait()
+    exit_code = proc.returncode if proc and proc.returncode is not None else 0
+    if exit_code in (-9, -15, 137, 143):
+        return AgyResult(text="🛑 agy execution was aborted.", exit_code=exit_code, stderr="Aborted")
+
+    text = final_response if final_response else "\n".join(plain_text_lines)
+    if len(text) > _STDOUT_CAP_BYTES:
+        text = text[:_STDOUT_CAP_BYTES] + "\n\n[output truncated at 512KiB]"
+
+    if result_error and result_error not in stderr_out:
+        stderr_out = f"{stderr_out}\n{result_error}".strip() if stderr_out else result_error
+
+    gc.collect()
+    return AgyResult(
+        text=text,
+        exit_code=exit_code,
+        stderr=stderr_out,
+    )

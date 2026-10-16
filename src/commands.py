@@ -30,8 +30,8 @@ BASE_MODELS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("gemini-3.7-flash", "Gemini 3.7 Flash", ("low", "medium", "high")),
     ("gemini-3.6-flash", "Gemini 3.6 Flash", ("low", "medium", "high")),
     ("gemini-3.1-pro", "Gemini 3.1 Pro", ("low", "high")),
-    ("claude-sonnet-4-6", "Claude Sonnet 4.6", ()),
-    ("claude-opus-4-6-thinking", "Claude Opus 4.6", ()),
+    ("claude-sonnet-5-5", "Claude Sonnet 5.5", ("low", "medium", "high")),
+    ("claude-opus-5-5", "Claude Opus 5.5", ("low", "medium", "high")),
     ("gpt-oss-120b-medium", "GPT-OSS 120B", ()),
 )
 
@@ -489,6 +489,7 @@ async def handle_text_command(
     args = parts[1] if len(parts) > 1 else ""
 
     if cmd == "/start":
+        cs.active = True
         return BridgeReply(WELCOME_TEXT)
     if cmd == "/ping":
         return BridgeReply("🏓 Pong! Antigravity Bridge aktif dan siap menerima perintah.")
@@ -576,6 +577,16 @@ async def handle_text_command(
             cs.photo_enabled = False  # type: ignore[attr-defined]
             return BridgeReply("📸 Photo processing: OFF")
         return BridgeReply("📸 Photo processing toggle not available in this build.")
+    if cmd == "/style":
+        mode = args.strip().lower()
+        if mode in ("on", "true", "1"):
+            setattr(cs, "style_hint", True)
+            return BridgeReply("🎨 Telegram style hint: ON (pesan akan diformat khusus Telegram)")
+        if mode in ("off", "false", "0"):
+            setattr(cs, "style_hint", False)
+            return BridgeReply("🎨 Telegram style hint: OFF (pesan diteruskan mentah ke agy)")
+        curr = "ON" if getattr(cs, "style_hint", True) else "OFF"
+        return BridgeReply(f"🎨 Telegram style hint is currently {curr}. Use /style on|off to change.")
     if cmd == "/files":
         if args == "clean":
             removed = clean_inbox(cs.chat_dir, max_age_hours=0)

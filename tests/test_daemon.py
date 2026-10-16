@@ -22,6 +22,7 @@ class _FakeTelegram:
     updates_to_serve: list[list[dict[str, Any]]]
     sent_messages: list[tuple[int, str]]
     chat_actions: list[tuple[int, str]]
+    registered_commands: list[dict[str, str]] | None = None
 
     async def __aenter__(self) -> "_FakeTelegram":
         return self
@@ -37,16 +38,31 @@ class _FakeTelegram:
 
     async def send_message(self, chat_id: int, text: str, *, keyboard: Any | None = None) -> int | None:
         self.sent_messages.append((chat_id, text))
-        return None
+        return len(self.sent_messages) - 1
 
     async def edit_message_text(self, chat_id: int, message_id: int, text: str, *, keyboard: Any | None = None) -> None:
-        self.sent_messages.append((chat_id, text))
+        if 0 <= message_id < len(self.sent_messages):
+            self.sent_messages[message_id] = (chat_id, text)
+        else:
+            self.sent_messages.append((chat_id, text))
 
     async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None:
         return None
 
     async def send_chat_action(self, chat_id: int, action: str = "typing") -> None:
         self.chat_actions.append((chat_id, action))
+
+    async def set_my_commands(
+        self, commands: list[dict[str, str]], *, scope: Any = None
+    ) -> dict[str, Any]:
+        self.registered_commands = commands
+        return {"ok": True}
+
+    async def send_document(
+        self, chat_id: int, file_path: Any, *, caption: str = ""
+    ) -> int | None:
+        self.sent_messages.append((chat_id, f"doc:{file_path}"))
+        return 1
 
 
 def _msg(text: str, *, update_id: int, user_id: int = 42, chat_id: int = 10) -> dict:
@@ -107,6 +123,8 @@ async def test_run_replies_to_authorized_message(tmp_path: Path, monkeypatch: py
     chat_id, text = tg.sent_messages[0]
     assert chat_id == 10
     assert text == "echo:hello"
+    assert tg.registered_commands is not None
+    assert len(tg.registered_commands) >= 10
 
     persisted = load_state(state_path, chats_root)
     assert persisted.last_update_id == 100
@@ -254,3 +272,103 @@ async def test_run_logs_one_line_per_turn(
     assert "exit=0" in msg
     assert "ms=" in msg
     assert "reply_len=" in msg
+
+
+async def test_detect_and_send_output_files(tmp_path: Path) -> None:
+    from src.daemon import _detect_and_send_output_files, clear_sent_documents
+
+    clear_sent_documents()
+    tg = _FakeTelegram(updates_to_serve=[], sent_messages=[], chat_actions=[])
+    pdf_file = tmp_path / "generated.pdf"
+    pdf_file.write_bytes(b"%PDF content")
+
+    text = "I created the file `generated.pdf` for you."
+    await _detect_and_send_output_files(text, str(tmp_path), tg, chat_id=10)
+
+    assert len(tg.sent_messages) == 1
+    assert "generated.pdf" in tg.sent_messages[0][1]
+
+
+async def test_detect_and_send_output_files_suppresses_duplicates(tmp_path: Path) -> None:
+    from src.daemon import _detect_and_send_output_files, clear_sent_documents
+
+    clear_sent_documents()
+    tg = _FakeTelegram(updates_to_serve=[], sent_messages=[], chat_actions=[])
+    pdf_file = tmp_path / "report.pdf"
+    pdf_file.write_bytes(b"%PDF initial")
+
+    text = "Here is `report.pdf`"
+    # First turn sends the file
+    await _detect_and_send_output_files(text, str(tmp_path), tg, chat_id=10)
+    assert len(tg.sent_messages) == 1
+
+    # Second turn with unmodified file should NOT send again
+    await _detect_and_send_output_files(text, str(tmp_path), tg, chat_id=10)
+    assert len(tg.sent_messages) == 1  # Still 1, duplicate suppressed!
+
+    # Modifying the file should allow resending the new version
+    import time
+    time.sleep(0.01)
+    pdf_file.write_bytes(b"%PDF revised content")
+    await _detect_and_send_output_files(text, str(tmp_path), tg, chat_id=10)
+    assert len(tg.sent_messages) == 2  # Sent because file was modified!
+
+
+async def test_group_inbound_messages_media_group() -> None:
+    from src.daemon import _group_inbound_messages
+    from src.telegram import InboundMessage
+
+    msg1 = InboundMessage(
+        update_id=1,
+        chat_id=10,
+        user_id=42,
+        text="",
+        document={"file_id": "doc1", "file_name": "target.docx"},
+        documents=[{"file_id": "doc1", "file_name": "target.docx"}],
+        media_group_id="group_1",
+    )
+    msg2 = InboundMessage(
+        update_id=2,
+        chat_id=10,
+        user_id=42,
+        text="Lengkapi file ini",
+        document={"file_id": "doc2", "file_name": "source.docx"},
+        documents=[{"file_id": "doc2", "file_name": "source.docx"}],
+        media_group_id="group_1",
+    )
+
+    grouped = _group_inbound_messages([msg1, msg2])
+    assert len(grouped) == 1
+    merged = grouped[0]
+    assert merged.update_id == 2
+    assert merged.text == "Lengkapi file ini"
+    assert len(merged.documents) == 2
+    assert merged.documents[0]["file_name"] == "target.docx"
+    assert merged.documents[1]["file_name"] == "source.docx"
+
+
+async def test_group_inbound_messages_multi_file_burst() -> None:
+    from src.daemon import _group_inbound_messages
+    from src.telegram import InboundMessage
+
+    msg1 = InboundMessage(
+        update_id=1,
+        chat_id=10,
+        user_id=42,
+        text="",
+        document={"file_id": "doc1", "file_name": "file1.docx"},
+        documents=[{"file_id": "doc1", "file_name": "file1.docx"}],
+    )
+    msg2 = InboundMessage(
+        update_id=2,
+        chat_id=10,
+        user_id=42,
+        text="Ini instruksinya",
+        document={"file_id": "doc2", "file_name": "file2.docx"},
+        documents=[{"file_id": "doc2", "file_name": "file2.docx"}],
+    )
+
+    grouped = _group_inbound_messages([msg1, msg2])
+    assert len(grouped) == 1
+    assert len(grouped[0].documents) == 2
+    assert grouped[0].text == "Ini instruksinya"

@@ -34,6 +34,7 @@ class ChatState:
     mode: str = ""  # "" → use cfg.agy.mode; values: "code" | "plan"
     effort: str = ""  # "" → default; values: "low" | "medium" | "high" | "max"
     photo_enabled: bool = True  # toggle for photo processing
+    style_hint: bool = True  # toggle for Telegram specific prompt hints
     turn_count: int = 0  # successful turns served on this chat
     active: bool = True  # False → bot ignores non-command messages
 
@@ -121,6 +122,7 @@ def _safe_chat_state(
         mode=_safe_mode(raw.get("mode", "")),
         effort=_safe_effort(raw.get("effort", "")),
         photo_enabled=_safe_bool(raw.get("photo_enabled", True)),
+        style_hint=_safe_bool(raw.get("style_hint", True)),
         turn_count=_safe_turn_count(raw.get("turn_count", 0)),
         active=_safe_bool(raw.get("active", True)),
     )

@@ -9,5 +9,24 @@
     "default_workdir": "",
     "model": "",
     "mode": "code"
+  },
+  "safety": {
+    "media": {
+      "categories": {
+        "documents": {
+          "mime_types": ["application/pdf", "text/markdown", "text/csv", "text/plain"],
+          "extensions": [".pdf", ".md", ".txt", ".csv", ".rst", ".tex", ".docx", ".xlsx", ".pptx"],
+          "max_size_bytes": 52428800,
+          "routing": "pass"
+        },
+        "code": {
+          "mime_types": ["text/*", "application/json", "application/x-yaml", "application/xml"],
+          "extensions": [".py", ".js", ".ts", ".go", ".rs", ".rb", ".java", ".c", ".cpp", ".h", ".php", ".ipynb", ".sh", ".bash", ".zsh"],
+          "max_size_bytes": 10485760,
+          "routing": "pass"
+        }
+      },
+      "default_routing": "block"
+    }
   }
 }
