@@ -1,0 +1,63 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Run Pytest Suite (CI)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          version: "latest"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run Pytest
+        run: pytest -v
+
+  deploy:
+    name: Deploy to Azure VPS (CD)
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.1
+        with:
+          host: ${{ secrets.AZURE_HOST }}
+          username: ${{ secrets.AZURE_USER }}
+          key: ${{ secrets.AZURE_SSH_KEY }}
+          port: ${{ secrets.AZURE_PORT || 22 }}
+          script: |
+            set -euo pipefail
+            export PATH="/home/AlAnsorri/.local/bin:$PATH"
+            cd /home/AlAnsorri/projects/agy-to-im
+            echo "==> Fetching and deploying latest changes from origin/main..."
+            git fetch origin main
+            git reset --hard origin/main
+            echo "==> Updating Python dependencies..."
+            uv pip install -e ".[dev]"
+            echo "==> Restarting background service..."
+            systemctl --user restart antigravity-telegram-bridge.service
+            sleep 3
+            echo "==> Checking service health..."
+            systemctl --user is-active --quiet antigravity-telegram-bridge.service
+            curl -sf http://127.0.0.1:9100/health
+            echo "==> Deployment finished successfully!"

@@ -37,12 +37,14 @@ Message [@userinfobot](https://t.me/userinfobot). It replies with your numeric u
 ## Step 3 — Clone
 
 ```sh
-git clone https://github.com/hah23255/agy-to-im.git \
-  ~/.gemini/extensions/antigravity-telegram-bridge
-cd ~/.gemini/extensions/antigravity-telegram-bridge
+git clone https://github.com/RosyidAl/agy-to-im.git \
+  ~/projects/agy-to-im
+mkdir -p ~/.gemini/extensions
+ln -sfn ~/projects/agy-to-im ~/.gemini/extensions/antigravity-telegram-bridge
+cd ~/projects/agy-to-im
 ```
 
-The clone target matters: `~/.gemini/extensions/` is where `agy` looks for plugins.
+The canonical development directory is `~/projects/agy-to-im`, symlinked to `~/.gemini/extensions/` where `agy` looks for extensions.
 
 ## Step 4 — Configure
 
@@ -130,6 +132,20 @@ sudo loginctl enable-linger $USER
 ```
 
 Without lingering, the user systemd manager only runs while you have an active login session.
+
+---
+
+## Automated CI/CD Deployment (GitHub Actions)
+
+This repository includes continuous integration and deployment (`.github/workflows/ci-cd.yml`):
+- **On Pull Request & Branch Push**: Runs pytest automated tests across Python 3.11 and 3.12.
+- **On Push to `main`**: Automatically deploys the latest version to the Azure VPS via SSH, updates Python dependencies, restarts the background service, and verifies the `/health` endpoint.
+
+Required GitHub Repository Secrets:
+- `AZURE_HOST`: VPS IP address or hostname.
+- `AZURE_USER`: VPS SSH user.
+- `AZURE_SSH_KEY`: Private SSH key authorized on the VPS.
+- `AZURE_PORT`: SSH port (default: 22).
 
 ---
 
