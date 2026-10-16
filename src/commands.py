@@ -27,20 +27,15 @@ DEFAULT_MODEL = "gemini-3.8-flash-low"
 # (model_id, display_name, supported_efforts)
 BASE_MODELS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("gemini-3.8-flash", "Gemini 3.8 Flash", ("low", "medium", "high")),
-    ("gemini-3.7-flash", "Gemini 3.7 Flash", ("low", "medium", "high")),
-    ("gemini-3.6-flash", "Gemini 3.6 Flash", ("low", "medium", "high")),
-    ("gemini-3.1-pro", "Gemini 3.1 Pro", ("low", "high")),
-    ("claude-sonnet-5-5", "Claude Sonnet 5.5", ("low", "medium", "high")),
-    ("claude-opus-5-5", "Claude Opus 5.5", ("low", "medium", "high")),
-    ("gpt-oss-120b-medium", "GPT-OSS 120B", ()),
+    ("claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)", ()),
+    ("claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)", ()),
+    ("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)", ()),
 )
 
 MODEL_CHOICES: tuple[str, ...] = tuple(m[0] for m in BASE_MODELS) + (
     "gemini-3.8-flash-high",
     "gemini-3.8-flash-medium",
     "gemini-3.8-flash-low",
-    "gemini-3.7-flash-high",
-    "gemini-3.1-pro-high",
 )
 MODE_CHOICES: tuple[tuple[str, str], ...] = (
     ("code", "Code (auto)"),

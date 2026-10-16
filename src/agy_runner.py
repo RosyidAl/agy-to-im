@@ -60,12 +60,6 @@ def abort_turn(chat_dir: str) -> bool:
 # requires --effort (available: low, medium, high)"), so the bridge appends one.
 _EFFORT_SUFFIX_MODELS: dict[str, tuple[tuple[str, ...], str]] = {
     "gemini-3.8": (("low", "medium", "high"), "low"),
-    "gemini-3.7": (("low", "medium", "high"), "low"),
-    "gemini-3.6": (("low", "medium", "high"), "low"),
-    "gemini-3.5": (("low", "medium", "high"), "low"),
-    "gemini-3.1": (("low", "high"), "low"),
-    "claude-opus-5-5": (("low", "medium", "high"), "medium"),
-    "claude-sonnet-5-5": (("low", "medium", "high"), "medium"),
 }
 _EFFORT_SUFFIXES: tuple[str, ...] = ("-low", "-medium", "-high", "-max")
 
